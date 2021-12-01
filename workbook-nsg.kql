@@ -1,0 +1,47 @@
+AzureActivity
+| extend Subscription=strcat('/subscriptions/', SubscriptionId)
+| where Subscription in~ ('/subscriptions/df8cbdab-1ff9-48c1-9c87-b5454180f700', '/subscriptions/4b80f6c0-9510-4ac0-9e0e-976e0c02f380', '/subscriptions/acbc2a60-4efe-485f-8af8-fcfc72c8b261', '/subscriptions/a6add8a0-7074-4439-9ab2-d4d2365b7095')
+| where ResourceGroup in~ ('app-we-ent-01', 'arc-we-01-rg', 'avd-we-01-rg', 'dashboards-msdn-we-01', 'db-we-ent-01', 'DefaultResourceGroup-WEU', 'hybrid-msdn-we-01', 'identity-ent-we-01', 'LogAnalyticsDefaultResources', 'migrate-msdn-we-01', 'msdb-we-02-rg', 'network-ent-we-01', 'network-msdn-we-01', 'security-ent-es-01', 'security-ent-we-01', 'security-msdn-we-01', 'storage-ent-we-01', 'tfstate-soc-msdn-we-01')
+| where CategoryValue == 'Administrative'
+| where ResourceProviderValue =~ 'microsoft.network'
+| where _ResourceId contains "networkSecurityGroups"
+| summarize arg_min(TimeGenerated, *) by CorrelationId
+| join kind=leftouter (AzureActivity
+    | where CategoryValue == 'Administrative'
+    | where ResourceProviderValue =~ 'microsoft.network'
+    | where _ResourceId contains "networkSecurityGroups"
+    //| extend Name = todynamic(iff(todynamic(RequestBody).name == '', 'mani', todynamic(RequestBody).name))
+    | summarize arg_max(TimeGenerated, *) by CorrelationId)
+    on CorrelationId
+| extend NSG = split(_ResourceId, '/')[8]
+| extend Resource = split(todynamic(Properties).entity, '/')[-1]
+| extend Rule=strcat(tostring(NSG), '-', split(todynamic(Properties).entity, '/')[-1])
+| where NSG in~ ('pass-spray-az-es-01-nsg', 'tst-01-nsg')
+| where tostring(NSG) =~ "All" or 'All' =~ 'All'
+| extend Operation=tolower(tostring(split(OperationNameValue, '/')[-1]))
+| where Operation =~ "All" or 'All' == 'All'
+| where Caller =~ "All" or 'All' == 'All'
+| where Rule =~ "All" or 'All' == 'All'
+| extend RequestBody=todynamic(Properties)
+| extend RequestBody=dynamic_to_json(RequestBody.requestbody)
+//|extend Name = todynamic(RequestBody.name)
+//| extend Name = todynamic(iff(todynamic(RequestBody).name == '', 'mani', todynamic(RequestBody).name))
+| project TimeGenerated, NSG, Resource, ResourceGroup, 
+    Operation=case(
+    todynamic(Properties).message == 'Microsoft.Network/networkSecurityGroups/write', 'NSG-create',
+    todynamic(Properties).message == 'Microsoft.Network/networkSecurityGroups/delete', 'NSG-delete',
+    RequestBody contains '{"properties":', 'Rule-create',
+    strcat('Rule-', tolower(tostring(split(OperationNameValue, '/')[-1])))
+    ),
+    Caller, CallerIpAddress, 
+    Message=todynamic(Properties).message, ActivityStatusValue,
+    Result= ActivityStatusValue1,
+    RequestBody,
+    ResourceId=tolower(_ResourceId), 
+    SourcePortRange = strcat(parse_json(RequestBody).properties.sourcePortRange, parse_json(RequestBody).properties.sourcePortRanges), 
+    SourceAddressPrefix = strcat(parse_json(RequestBody).properties.sourceAddressPrefix, parse_json(RequestBody).properties.sourceAddressPrefixes),
+    DestinationPortRange = strcat(parse_json(RequestBody).properties.destinationPortRange, parse_json(RequestBody).properties.destinationPortRanges), DestinationAddressPrefix = strcat(todynamic(RequestBody).properties.destinationAddressPrefix, todynamic(RequestBody).properties.destinationAddressPrefixes), 
+    Access = parse_json(RequestBody).properties.access, 
+    Priority = parse_json(RequestBody).properties.priority, 
+    Direction = parse_json(RequestBody).properties.direction
+| order by TimeGenerated desc

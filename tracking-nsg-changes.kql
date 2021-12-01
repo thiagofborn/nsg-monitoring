@@ -1,0 +1,40 @@
+AzureActivity
+| where CategoryValue == 'Administrative'
+| where ResourceProviderValue =~ 'microsoft.network'
+| where _ResourceId contains "networkSecurityGroups"
+| summarize arg_min(TimeGenerated, *) by CorrelationId
+| join kind=leftouter (AzureActivity
+    | where CategoryValue == 'Administrative'
+    | where ResourceProviderValue =~ 'microsoft.network'
+    | where _ResourceId contains "networkSecurityGroups"
+    | summarize arg_max(TimeGenerated, *) by CorrelationId)
+    on CorrelationId
+| extend NSG = split(_ResourceId, '/')[8]
+| extend Resource = split(todynamic(Properties).entity, '/')[-1]
+| extend Rule=strcat(tostring(NSG), '-', split(todynamic(Properties).entity, '/')[-1])
+| extend Operation=tolower(tostring(split(OperationNameValue, '/')[-1]))
+| where Operation =~ "All" or 'All' == 'All'
+| where Caller =~ "All" or 'All' == 'All'
+| where Rule =~ "All" or 'All' == 'All'
+| extend RequestBody=todynamic(Properties)
+| extend RequestBody=dynamic_to_json(RequestBody.requestbody)
+| project TimeGenerated, NSG, Resource, ResourceGroup, 
+    Operation=case(
+    todynamic(Properties).message == 'Microsoft.Network/networkSecurityGroups/write', 'NSG-create',
+    todynamic(Properties).message == 'Microsoft.Network/networkSecurityGroups/delete', 'NSG-delete',
+    todynamic(Properties).message == 'Microsoft.Network/networkSecurityGroups/delete', 'NSG-update',
+    RequestBody contains '{"properties":', 'Rule-create',
+    strcat('Rule-', tolower(tostring(split(OperationNameValue, '/')[-1])))
+    ),
+    Caller, CallerIpAddress, 
+    Message=todynamic(Properties).message, ActivityStatusValue,
+    Result= ActivityStatusValue1,
+    RequestBody,
+    ResourceId=tolower(_ResourceId), 
+    SourcePortRange = strcat(parse_json(RequestBody).properties.sourcePortRange, parse_json(RequestBody).properties.sourcePortRanges), 
+    SourceAddressPrefix = strcat(parse_json(RequestBody).properties.sourceAddressPrefix, parse_json(RequestBody).properties.sourceAddressPrefixes),
+    DestinationPortRange = strcat(parse_json(RequestBody).properties.destinationPortRange, parse_json(RequestBody).properties.destinationPortRanges), DestinationAddressPrefix = strcat(todynamic(RequestBody).properties.destinationAddressPrefix, todynamic(RequestBody).properties.destinationAddressPrefixes), 
+    Access = parse_json(RequestBody).properties.access, 
+    Priority = parse_json(RequestBody).properties.priority, 
+    Direction = parse_json(RequestBody).properties.direction
+| order by TimeGenerated desc
